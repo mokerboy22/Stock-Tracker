@@ -43,6 +43,7 @@
   .icard { background: var(--tile); border:1px solid var(--line); border-radius:22px; padding:16px; display:flex; flex-direction:column; gap:8px; text-align:left; color: var(--ink); min-height:112px; }
   .icard.dash { border-style:dashed; justify-content:center; }
   .icard .nm { font-size:19px; line-height:1.15; }
+  :root { --barOwn: var(--accent); --barNot: color-mix(in srgb, var(--mu) 50%, var(--t2)); }
   .bar { height:6px; border-radius:3px; background: var(--t2); display:flex; overflow:hidden; }
   .chips { display:flex; gap:6px; overflow-x:auto; scrollbar-width:none; margin-top:10px; }
   .chips::-webkit-scrollbar { display:none; }
@@ -166,9 +167,9 @@ const SUPABASE_URL = "";
 const SUPABASE_KEY = "";
 
 const SOURCES = [
-  {id:"ndx",   group:"USA", name:"Nasdaq-100",        region:"US", page:"Nasdaq-100"},
+  {id:"ndx",   group:"USA", name:"Nasdaq-100",        region:"US", page:"Nasdaq-100", alt:["List_of_Nasdaq-100_companies"]},
   {id:"sp500", group:"USA", name:"S&P 500",           region:"US", page:"List_of_S&P_500_companies"},
-  {id:"dow",   group:"USA", name:"Dow Jones",         region:"US", page:"Dow_Jones_Industrial_Average"},
+  {id:"dow",   group:"USA", name:"Dow Jones",         region:"US", page:"Dow_Jones_Industrial_Average", alt:["List_of_Dow_Jones_Industrial_Average_companies","Historical_components_of_the_Dow_Jones_Industrial_Average"]},
   {id:"ftse",  group:"UK",  name:"FTSE 100",          region:"UK", page:"FTSE_100_Index"},
   {id:"dax",   group:"Duitsland", name:"DAX",         region:"DE", page:"DAX"},
   {id:"aex",   group:"Nederland", name:"AEX",         region:"NL", page:"AEX_index"},
@@ -180,14 +181,14 @@ const SOURCES = [
   {id:"obx",   group:"Scandinavië", name:"OBX", sub:"Noorwegen", region:"NO", page:"OBX_Index"},
   {id:"omxh",  group:"Scandinavië", name:"OMX Helsinki 25", sub:"Finland", region:"FI", page:"OMX_Helsinki_25"},
   {id:"smi",   group:"Zwitserland", name:"SMI",       region:"CH", page:"Swiss_Market_Index"},
-  {id:"n225",  group:"Japan", name:"Nikkei 225",      region:"JP", page:"Nikkei_225"},
+  {id:"n225",  group:"Japan", name:"Nikkei 225",      region:"JP", page:"Nikkei_225", alt:["List_of_Nikkei_225_companies"]},
   {id:"kospi", group:"Korea", name:"KOSPI 200",       region:"KR", page:"KOSPI_200"},
   {id:"sse50", group:"China", name:"SSE 50",          region:"CN", page:"SSE_50_Index"},
   {id:"csi300",group:"China", name:"CSI 300",         region:"CN", page:"CSI_300_Index"},
   {id:"hsi",   group:"China", name:"Hang Seng", sub:"Hongkong", region:"HK", page:"Hang_Seng_Index"},
-  {id:"ipc",   group:"Mexico", name:"S&P/BMV IPC",    region:"MX", page:"S&P/BMV_IPC"},
-  {id:"ibov",  group:"Brazilië", name:"Ibovespa",     region:"BR", page:"Ibovespa"},
-  {id:"merval",group:"Argentinië", name:"S&P Merval", region:"AR", page:"MERVAL"}
+  {id:"ipc",   group:"Mexico", name:"S&P/BMV IPC",    region:"MX", page:"Índice_de_Precios_y_Cotizaciones", alt:["S&P/BMV_IPC","Indice_de_Precios_y_Cotizaciones","Mexican_Stock_Exchange"]},
+  {id:"ibov",  group:"Brazilië", name:"Ibovespa",     region:"BR", page:"Ibovespa", alt:["Índice_Bovespa","List_of_companies_listed_on_B3"]},
+  {id:"merval",group:"Argentinië", name:"S&P Merval", region:"AR", page:"MERVAL", alt:["S&P_Merval","Merval"]}
 ];
 
 const STAT = {
@@ -253,6 +254,10 @@ let lists = {}, custom = {}, marks = {}, history = [], tags = [...DEFAULT_TAGS];
 let cur = null, loadFailed = false;
 let F = {chip:"all", tag:null};
 let viewMode = pget("view","list");
+const REGIONS=["USA","Europa","Azië","Latijns-Amerika"];
+const REGMAP={USA:"USA",Japan:"Azië",Korea:"Azië",China:"Azië",Mexico:"Latijns-Amerika","Brazilië":"Latijns-Amerika","Argentinië":"Latijns-Amerika"};
+const regionOf = s => REGMAP[s.group] || "Europa";
+let homeReg = pget("homeReg","USA"); if(homeReg!=="all" && homeReg!=="mine" && !REGIONS.includes(homeReg)) homeReg="USA";
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -280,34 +285,63 @@ function counts(id){
 }
 
 /* ============ WIKIPEDIA FETCH + PARSE ============ */
-async function fetchMembers(source){
-  const url = "https://en.wikipedia.org/w/api.php?action=parse&format=json&formatversion=2&prop=text&redirects=1&origin=*&page="+encodeURIComponent(source.page);
-  const r = await fetch(url); if(!r.ok) throw new Error("HTTP "+r.status);
-  const j = await r.json(); if(!j.parse) throw new Error("pagina niet gevonden");
-  const doc = new DOMParser().parseFromString(j.parse.text,"text/html");
+const TKH=/(ticker|symbol|code|\bric\b|c[oó]digo|sigla)/, NMH=/(company|name|security|constituent|empresa|nombre|issuer|corporation)/;
+const TKV=/^[A-Z0-9][A-Z0-9.\-&]{0,11}$/;
+const cleanT = t => (t||"").split(":").pop().replace(/\.$/,"").trim();
+function parseDoc(doc){
   doc.querySelectorAll("sup,style,.reference").forEach(e=>e.remove());
-  let best = [];
+  const cells = r => [...r.children].map(x=>x.textContent.replace(/\s+/g," ").trim());
+  const dedupe = a => { const s=new Set(); return a.filter(m=>!s.has(m.t)&&s.add(m.t)); };
+  const cands=[], diag=[];
   doc.querySelectorAll("table").forEach(tb=>{
-    const rows = [...tb.querySelectorAll("tr")]; if(rows.length<10) return;
-    const hi = rows.findIndex(r=>r.querySelector("th")); if(hi<0) return;
-    const heads = [...rows[hi].children].map(c=>c.textContent.trim().toLowerCase());
-    const ti = heads.findIndex(h=>/(ticker|symbol|code|\bric\b)/.test(h));
-    const ni = heads.findIndex(h=>/(company|name|security|constituent)/.test(h));
-    if(ti<0 && ni<0) return;
-    const out = [];
-    rows.slice(hi+1).forEach(r=>{
-      const c = [...r.children].map(x=>x.textContent.replace(/\s+/g," ").trim());
-      if(c.length<=Math.max(ti,ni)) return;
-      let t = ti>=0 ? c[ti] : c[ni]; const n = ni>=0 ? c[ni] : c[ti];
-      t = (t||"").split(":").pop().replace(/\.$/,"").trim();
-      if(!t || t.length>20) return;
-      out.push({t,n:n||t});
-    });
-    if(out.length>best.length) best = out;
+    const rows=[...tb.querySelectorAll("tr")].filter(r=>r.closest("table")===tb); if(rows.length<4) return;
+    let hi=-1, hits=0;
+    for(let i=0;i<Math.min(3,rows.length);i++){ if(!rows[i].querySelector("th")) continue;
+      const n=cells(rows[i]).filter(x=>TKH.test(x.toLowerCase())||NMH.test(x.toLowerCase())).length; if(n>hits){hits=n;hi=i;} }
+    const heads = hi>=0 ? cells(rows[hi]).map(x=>x.toLowerCase()) : [];
+    const data = rows.slice(hi+1).map(cells).filter(c=>c.length>=2); if(data.length<3) return;
+    diag.push([rows.length, heads.length?heads.slice(0,4).join(","):cells(rows[0]).slice(0,3).join(",")]);
+    const ncol = Math.max(...data.map(c=>c.length));
+    const stat = j => { const v=data.map(c=>cleanT(c[j])).filter(x=>TKV.test(x)); return {j, uniq:new Set(v).size, letters:v.filter(x=>/[A-Z]/.test(x)).length, n:v.length}; };
+    let ti=-1, ni=-1, byHeader=false;
+    const tcols = heads.map((x,j)=>TKH.test(x)?j:-1).filter(j=>j>=0).map(stat).sort((x,y)=>y.uniq-x.uniq);
+    if(tcols.length && tcols[0].uniq>=data.length*0.6){ ti=tcols[0].j; byHeader=true; }
+    else if(tcols.length){ ti=heads.findIndex(x=>TKH.test(x)); byHeader=true; }
+    ni = heads.findIndex((x,j)=>j!==ti && NMH.test(x)); if(ni>=0) byHeader=true;
+    if(ti<0 && ni<0){
+      const all=[...Array(ncol).keys()].map(stat).filter(s=>s.uniq>=data.length*0.8 && s.letters>=s.n*0.6).sort((x,y)=>y.uniq-x.uniq);
+      if(!all.length) return; ti=all[0].j;
+    }
+    if(ni<0 && ti>=0){
+      let bl=0; for(let j=0;j<ncol;j++){ if(j===ti) continue; const v=data.map(c=>c[j]||""); const let_=v.filter(x=>/[A-Za-z]/.test(x)).length; const avg=v.reduce((s,x)=>s+x.length,0)/v.length;
+        if(let_>=v.length*0.7 && avg>=4 && new Set(v).size>=v.length*0.7 && avg>bl){ bl=avg; ni=j; } }
+    }
+    const out=[];
+    data.forEach(c=>{ if(c.length<=Math.max(ti,ni)) return; const t=cleanT(ti>=0?c[ti]:c[ni]); const n=ni>=0?c[ni]:c[ti]; if(!t||t.length>20) return; if(!byHeader && !TKV.test(t)) return; out.push({t,n:n||t}); });
+    cands.push({out:dedupe(out), sig:heads.join("|"), byHeader});
   });
-  const seen = new Set(); best = best.filter(m=>!seen.has(m.t)&&seen.add(m.t));
-  if(best.length<10) throw new Error("geen ledentabel gevonden");
-  return best;
+  const pick = f => cands.filter(c=>f(c)&&c.out.length>=10).sort((x,y)=>y.out.length-x.out.length)[0];
+  let best = pick(c=>c.byHeader) || pick(c=>!c.byHeader);
+  if(best) return best.out;
+  const groups={}; cands.filter(c=>c.byHeader&&c.sig).forEach(c=>(groups[c.sig]??=[]).push(...c.out));
+  const g = Object.values(groups).map(dedupe).sort((x,y)=>y.length-x.length)[0];
+  if(g && g.length>=10) return g;
+  const li=[]; doc.querySelectorAll("li").forEach(e=>{ const m=e.textContent.replace(/\s+/g," ").trim().match(/^(.{2,80}?)\s*\((?:[A-Za-z .]{2,20}:\s*)([A-Z0-9.\-]{1,10})\)/); if(m) li.push({t:m[2],n:m[1].replace(/[,;]$/,"").trim()}); });
+  const l=dedupe(li); if(l.length>=10) return l;
+  const d=diag.sort((x,y)=>y[0]-x[0]).slice(0,4).map(x=>`${x[0]} rijen [${x[1]}]`).join("; ");
+  throw new Error("geen ledentabel gevonden · tabellen: "+(d||"geen")+` · lijstregels met ticker: ${l.length}`);
+}
+async function fetchMembers(source){
+  let lastErr;
+  for(const page of [source.page, ...(source.alt||[])]){
+    try{
+      const url = "https://en.wikipedia.org/w/api.php?action=parse&format=json&formatversion=2&prop=text&redirects=1&origin=*&page="+encodeURIComponent(page);
+      const r = await fetch(url); if(!r.ok) throw new Error("HTTP "+r.status);
+      const j = await r.json(); if(!j.parse) throw new Error("pagina niet gevonden ("+page+")");
+      return parseDoc(new DOMParser().parseFromString(j.parse.text,"text/html"));
+    }catch(e){ lastErr = lastErr || e; }
+  }
+  throw lastErr;
 }
 
 /* ============ UPDATE + DIFF ============ */
@@ -366,7 +400,7 @@ function cardHTML(id,name,sub){
   if(!mem) body=`<div class="bar"></div><div class="sm mu">Nog niet geladen</div>`;
   else if(!mem.length) body=`<div class="bar"></div><div class="sm mu">Nog leeg</div>`;
   else { const c=counts(id);
-    body=`<div class="bar"><div style="width:${c.owned/c.total*100}%;background:#22c55e"></div><div style="width:${c.not/c.total*100}%;background:#f87171"></div></div><div class="sm mu">${c.owned} in bezit · ${c.total} totaal</div>`; }
+    body=`<div class="bar"><div style="width:${c.owned/c.total*100}%;background:var(--barOwn)"></div><div style="width:${c.not/c.total*100}%;background:var(--barNot)"></div></div><div class="sm mu">${c.owned} in bezit · ${c.total} totaal</div>`; }
   return `<button class="icard" data-open="${id}"><div class="sm mu">${esc(sub)}</div><div class="disp nm">${esc(name)}</div><div style="margin-top:auto;display:flex;flex-direction:column;gap:8px">${body}</div></button>`;
 }
 function wireCards(root){ root.querySelectorAll("[data-open]").forEach(b=>b.onclick=()=>openIndex(b.dataset.open)); root.querySelectorAll("[data-newidx]").forEach(b=>b.onclick=newCustom); }
@@ -376,13 +410,18 @@ function renderHome(){
   $("#homeNotice").innerHTML = last ? `<div class="card between" style="padding:14px 16px"><div style="min-width:0"><div style="font-size:14px;font-weight:600">Laatste wijziging · ${fmtDate(last.at)}</div><div class="sm mu">${esc(last.index)}: ${last.added.length} nieuw, ${last.removed.length} verwijderd</div></div><button class="link" id="seeChanges">Bekijk</button></div>` : "";
   const sc=$("#seeChanges"); if(sc) sc.onclick=()=>showTab("changes");
   const anyLoaded = SOURCES.some(s=>lists[s.id]);
-  let h = anyLoaded ? "" : `<div class="card sm mu">Nog geen lijsten geladen. Tik op "Alles updaten" om alle indexen op te halen.</div>`;
   const cs=Object.entries(custom);
-  h+=`<div class="sec">Mijn indexen</div><div class="grid">${cs.map(([id,c])=>cardHTML(id,c.name,"Eigen index")).join("")}${newCardHTML}</div>`;
-  const groups={}; SOURCES.forEach(s=>(groups[s.group]??=[]).push(s));
-  for(const g in groups) h+=`<div class="sec">${esc(g)}</div><div class="grid">${groups[g].map(s=>cardHTML(s.id,s.name,s.sub||g)).join("")}</div>`;
-  h+=`<div class="row sm mu" style="gap:14px;margin-top:18px;flex-wrap:wrap"><span class="row" style="gap:6px"><i style="width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block"></i>In bezit</span><span class="row" style="gap:6px"><i style="width:8px;height:8px;border-radius:50%;background:#f87171;display:inline-block"></i>Niet in bezit</span><span class="row" style="gap:6px"><i style="width:8px;height:8px;border-radius:50%;background:var(--t2);border:1px solid var(--line);display:inline-block"></i>Open</span></div>`;
+  const regs=[...REGIONS.map(r=>[r,r,SOURCES.filter(s=>regionOf(s)===r).length]),["mine","Mijn",cs.length],["all","Alles",SOURCES.length+cs.length]];
+  let h=`<div class="chips" style="margin-top:14px">${regs.map(([id,l,n])=>`<button class="chip ${homeReg===id?"on":""}" data-reg="${esc(id)}">${esc(l)} ${n}</button>`).join("")}</div>`;
+  if(!anyLoaded) h+=`<div class="card sm mu">Nog geen lijsten geladen. Tik op "Alles updaten" om alle indexen op te halen.</div>`;
+  const mineHTML=`<div class="grid">${cs.map(([id,c])=>cardHTML(id,c.name,"Eigen index")).join("")}${newCardHTML}</div>`;
+  const regHTML=r=>`<div class="grid">${SOURCES.filter(s=>regionOf(s)===r).map(s=>cardHTML(s.id,s.name,s.sub||s.group)).join("")}</div>`;
+  if(homeReg==="all"){ h+=`<div class="sec">Mijn indexen</div>${mineHTML}`; REGIONS.forEach(r=>h+=`<div class="sec">${esc(r)}</div>${regHTML(r)}`); }
+  else if(homeReg==="mine") h+=`<div style="margin-top:6px">${mineHTML}</div>`;
+  else h+=`<div style="margin-top:6px">${regHTML(homeReg)}</div>`;
+  h+=`<div class="row sm mu" style="gap:14px;margin-top:18px;flex-wrap:wrap"><span class="row" style="gap:6px"><i style="width:8px;height:8px;border-radius:50%;background:var(--barOwn);display:inline-block"></i>In bezit</span><span class="row" style="gap:6px"><i style="width:8px;height:8px;border-radius:50%;background:var(--barNot);display:inline-block"></i>Niet in bezit</span><span class="row" style="gap:6px"><i style="width:8px;height:8px;border-radius:50%;background:var(--t2);border:1px solid var(--line);display:inline-block"></i>Open</span></div>`;
   $("#homeGrid").innerHTML=h; wireCards($("#homeGrid"));
+  $("#homeGrid").querySelectorAll("[data-reg]").forEach(b=>b.onclick=()=>{homeReg=b.dataset.reg;pset("homeReg",homeReg);renderHome();});
 }
 function renderMine(){
   const cs=Object.entries(custom);
