@@ -84,6 +84,7 @@
   .swatch span { flex:1; }
   ul.clean { margin:8px 0 0; padding-left:18px; } ul.clean li { margin:4px 0; font-size:14px; }
   .add { color: var(--pass); } .rem { color: var(--fail); }
+  a.scr { display:block; text-align:center; text-decoration:none; margin-top:14px; padding:13px 14px; border-radius:14px; border:1px solid var(--line); background: var(--tile); color: var(--accent); font-size:13px; font-weight:600; }
 </style>
 </head>
 <body>
@@ -147,6 +148,13 @@
     <div class="schemes" id="schemes"></div>
   </div>
   <div class="card"><div style="font-weight:600">Opslag</div><div class="sm mu" id="storageInfo" style="margin-top:6px"></div></div>
+  <div class="card"><label class="between" style="font-weight:600"><span>Knop "Halal-check in HS Screener"</span><input type="checkbox" id="showScr"></label>
+    <div class="sm mu" style="margin-top:6px">Toont bij elk aandeel een knop die het opent in je Halal Stock Screener.</div></div>
+  <div class="card"><div style="font-weight:600">Back-up</div>
+    <div class="sm mu" style="margin-top:6px">Sla al je lijsten en markeringen op als bestand, of zet een eerder bestand terug.</div>
+    <div class="row" style="margin-top:12px"><button class="primary" id="btnExport" style="flex:1">Back-up maken</button><button class="ghost" id="btnImport" style="flex:1">Terugzetten</button></div>
+    <input type="file" id="importFile" accept=".json,application/json" class="hidden">
+    <div class="sm mu" id="backupInfo" style="margin-top:10px"></div></div>
   <div class="card"><div style="font-weight:600">Let op</div><div class="sm mu" style="margin-top:6px">Ledenlijsten komen van Wikipedia en kunnen even achterlopen op de officiële indexen. Halal-markeringen zijn je eigen indeling, geen religieus oordeel.</div></div>
 </section>
 </main>
@@ -199,6 +207,7 @@ const STAT = {
   ethic:   {label:"Ethische redenen",          short:"Ethisch",        color:"#f59e0b", d:["rgba(245,158,11,.16)","#FCD34D"], l:["#FBEBD0","#6E4A06"]},
   other:   {label:"Overig",                    short:"Overig",         color:"#9ca3af", d:["rgba(156,163,175,.18)","#D1D5DB"],l:["#E9EBEF","#3F4651"]}
 };
+const SCREENER_URL = "https://mokerboy22.github.io/HS-Screener/";
 const DEFAULT_TAGS = ["Betrokken bij landen in oorlog","Betrokken bij misdaden","Ecologische problemen","Dierproeven"];
 
 /* ============ THEMA ============ */
@@ -528,6 +537,7 @@ function openMark(t){
      ${st.s && st.s!=="owned"?`<label class="lbl" for="note">Notitie (optioneel)</label><textarea id="note" rows="2" placeholder="bijv. schuld 34% (max 33%)">${esc(st.note)}</textarea>`:""}
      <div class="row" style="margin-top:16px"><button class="ghost" style="flex:1" id="clr">Wissen</button><button class="primary" style="flex:2" id="sv">Opslaan</button></div>
      ${cs.length?`<label class="lbl" for="toIdx">Toevoegen aan mijn index</label><div class="row"><select id="toIdx">${cs.map(([id,c])=>`<option value="${id}">${esc(c.name)}</option>`).join("")}</select><button class="ghost" id="addTo" style="flex:none">Toevoegen</button></div>`:""}
+     ${pget("showScr",true)?`<a class="scr" href="${SCREENER_URL}?t=${encodeURIComponent(t)}" target="_blank" rel="noopener">Halal-check in HS Screener</a>`:""}
      ${isCustom(cur)?`<button class="ghost full rem" id="rmFrom">Verwijderen uit deze index</button>`:""}`);
     document.querySelectorAll("#panel .opt").forEach(b=>b.onclick=()=>{ keep(); st.s=b.dataset.s; if(!STAT[st.s].edge) st.edge=false; draw(); });
     document.querySelectorAll("#panel .chip").forEach(b=>b.onclick=()=>{ keep(); const g=b.dataset.g; st.tags.has(g)?st.tags.delete(g):st.tags.add(g); draw(); });
@@ -597,6 +607,31 @@ function renderSchemes(){
   $("#storageInfo").textContent = useCloud ? "Cloud (Supabase): je gegevens zijn gelijk op al je apparaten." : "Alleen op dit apparaat. Gebruik steeds hetzelfde icoon op je beginscherm. Met Supabase (zie README) worden je gegevens tussen apparaten gedeeld.";
 }
 
+/* ============ BACK-UP ============ */
+function renderBackupInfo(){ const d=pget("lastBackup",null); $("#backupInfo").textContent = d ? "Laatste back-up: "+new Date(d).toLocaleString("nl-NL",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}) : "Nog geen back-up gemaakt."; }
+$("#btnExport").onclick=async()=>{
+  const data=JSON.stringify({app:"hs-tracker",v:1,at:new Date().toISOString(),lists,custom,marks,history,tags});
+  const name="hs-tracker-backup-"+new Date().toISOString().slice(0,10)+".json";
+  const file=new File([data],name,{type:"application/json"});
+  try{
+    if(navigator.canShare && navigator.canShare({files:[file]})){ await navigator.share({files:[file]}); }
+    else{ const a=document.createElement("a"); a.href=URL.createObjectURL(file); a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),5000); }
+    pset("lastBackup",new Date().toISOString()); renderBackupInfo();
+  }catch(e){ if(e.name!=="AbortError") alert("Back-up maken mislukt: "+e.message); }
+};
+$("#btnImport").onclick=()=>$("#importFile").click();
+$("#importFile").onchange=async ev=>{
+  const f=ev.target.files[0]; ev.target.value=""; if(!f) return;
+  try{
+    const d=JSON.parse(await f.text());
+    if(d.app!=="hs-tracker" || typeof d.marks!=="object" || typeof d.lists!=="object") throw new Error("dit is geen back-up van HS Tracker");
+    const n=Object.keys(d.marks).length, when=d.at?new Date(d.at).toLocaleDateString("nl-NL"):"onbekende datum";
+    if(!confirm(`Back-up van ${when} terugzetten? Deze bevat ${n} markeringen en vervangt alles wat nu in de app staat.`)) return;
+    lists=d.lists; custom=d.custom||{}; marks=d.marks; history=d.history||[]; tags=d.tags&&d.tags.length?d.tags:[...DEFAULT_TAGS];
+    loadFailed=false; if(await saveAll()){ cur=null; $("#indexView").classList.add("hidden"); $("#home").classList.remove("hidden"); renderAll(); alert("Back-up teruggezet."); }
+  }catch(e){ alert("Terugzetten mislukt: "+e.message); }
+};
+
 /* ============ TABS + INIT ============ */
 function showTab(t){
   document.querySelectorAll("#tabbar button").forEach(x=>x.classList.toggle("on",x.dataset.tab===t));
@@ -608,7 +643,8 @@ document.querySelectorAll("#tabbar button").forEach(b=>b.onclick=()=>{ if(b.data
 function renderAll(){ if(cur) renderIndex(); renderHome(); renderMine(); renderHistory(); }
 
 $("#logo").src = document.querySelector('link[rel="apple-touch-icon"]').href;
-renderSchemes(); applyPalette();
+renderSchemes(); applyPalette(); renderBackupInfo();
+$("#showScr").checked=pget("showScr",true); $("#showScr").onchange=e=>pset("showScr",e.target.checked);
 (async()=>{
   try{ lists=await load("lists",{}); custom=await load("custom",{}); marks=await load("marks",{}); history=await load("history",[]); tags=await load("tags",[...DEFAULT_TAGS]); migrate(); }
   catch(e){ loadFailed=true; $("#homeNotice").innerHTML=`<div class="card sm rem">Je gegevens konden niet geladen worden (${esc(e.message)}). Controleer je verbinding en open de app opnieuw.</div>`; $("#homeGrid").innerHTML=""; return; }
