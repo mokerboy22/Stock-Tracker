@@ -127,7 +127,7 @@
 <!-- MIJN LIJSTEN -->
 <section id="tab-mine" class="hidden">
   <div class="between"><h1 class="disp">Mijn lijsten</h1><button class="primary" id="btnNew">+ Nieuw</button></div>
-  <div class="sm mu" style="margin-top:6px">Stel je eigen indexen samen. Markeringen gelden overal waar het aandeel voorkomt.</div>
+  <div class="sm mu" style="margin-top:6px">Stel je eigen indexen samen. Elke index heeft zijn eigen markeringen.</div>
   <div id="mineGrid"></div>
 </section>
 
@@ -273,7 +273,7 @@ const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">
 const src = id => SOURCES.find(s=>s.id===id);
 const isCustom = id => id in custom;
 const members = id => isCustom(id) ? custom[id].members : (lists[id]?.members);
-const keyOf = (id,m) => isCustom(id) ? m.k : src(id).region+":"+m.t;
+const keyOf = (id,m) => id+"|"+m.t;
 const isNew = m => m.added && Date.now()-Date.parse(m.added)<14*864e5;
 const stOf = (id,m) => marks[keyOf(id,m)]?.s || "none";
 const fmtDate = d => new Date(d).toLocaleDateString("nl-NL",{day:"numeric",month:"short"});
@@ -284,6 +284,15 @@ async function saveAll(){
 }
 function migrate(){
   Object.values(marks).forEach(k=>{ if(k.s==="not"){ k.s="other"; if(k.r) k.note=[k.r,k.note].filter(Boolean).join(" – "); delete k.r; } });
+  // Oude gedeelde markeringen (per land) omzetten naar een eigen markering per index.
+  let changed=false;
+  Object.keys(marks).filter(k=>!k.includes("|")).forEach(old=>{
+    const i=old.indexOf(":"), reg=old.slice(0,i), t=old.slice(i+1); let hit=false;
+    SOURCES.filter(s=>s.region===reg && lists[s.id]?.members.some(m=>m.t===t)).forEach(s=>{ if(!marks[s.id+"|"+t]) marks[s.id+"|"+t]={...marks[old]}; hit=true; });
+    Object.entries(custom).forEach(([cid,c])=>c.members.forEach(m=>{ if(m.k===old){ if(!marks[cid+"|"+m.t]) marks[cid+"|"+m.t]={...marks[old]}; hit=true; } }));
+    if(hit){ delete marks[old]; changed=true; }
+  });
+  return changed;
 }
 function counts(id){
   const mem=members(id)||[]; const c={total:mem.length,none:0,edge:0,nw:0};
@@ -390,7 +399,7 @@ function showReport(reports,errors){
   chg.forEach(r=>{
     h+=`<p><b>${esc(r.src.name)}</b></p><ul class="clean">`;
     r.added.forEach(m=>h+=`<li class="add">+ ${esc(m.t)} ${esc(m.n)}</li>`);
-    r.removed.forEach(m=>h+=`<li class="rem">− ${esc(m.t)} ${esc(m.n)}${marks[r.src.region+":"+m.t]?.s==="owned"?" <b>(je bezit dit)</b>":""}</li>`);
+    r.removed.forEach(m=>h+=`<li class="rem">− ${esc(m.t)} ${esc(m.n)}${marks[r.src.id+"|"+m.t]?.s==="owned"?" <b>(je bezit dit)</b>":""}</li>`);
     h+="</ul>";
   });
   if(base.length) h+=`<p><b>Eerste keer geladen</b> (startpunt opgeslagen):<br><span class="mu sm">${base.map(r=>esc(r.src.name)+" "+r.baseline).join(" · ")}</span></p>`;
@@ -550,8 +559,8 @@ function openMark(t){
         ...(STAT[st.s].edge&&st.edge?{edge:true}:{}), ...(st.s==="ethic"&&st.tags.size?{tags:[...st.tags]}:{}), ...(st.s!=="owned"&&st.note?{note:st.note}:{})};
       await persist();
     };
-    const ad=$("#addTo"); if(ad) ad.onclick=async()=>{ const c=custom[$("#toIdx").value]; if(!c.members.some(x=>x.k===key)) c.members.push({t:m.t,n:m.n,k:key}); await persist(); };
-    const rf=$("#rmFrom"); if(rf) rf.onclick=async()=>{ custom[cur].members=custom[cur].members.filter(x=>x.t!==t); await persist(); };
+    const ad=$("#addTo"); if(ad) ad.onclick=async()=>{ keep(); const cid=$("#toIdx").value, c=custom[cid]; if(!c.members.some(x=>x.t===m.t)){ c.members.push({t:m.t,n:m.n}); if(marks[key] && !marks[cid+"|"+m.t]) marks[cid+"|"+m.t]={...marks[key]}; } await persist(); };
+    const rf=$("#rmFrom"); if(rf) rf.onclick=async()=>{ custom[cur].members=custom[cur].members.filter(x=>x.t!==t); delete marks[key]; await persist(); };
   };
   draw();
 }
@@ -576,8 +585,8 @@ function addBulk(id,text){
   const c=custom[id];
   text.split(/\n/).map(l=>l.trim()).filter(Boolean).forEach(l=>{
     const [t,...rest]=l.split(/[\s,;]+/); const T=t.toUpperCase(); if(!T) return;
-    const k="CUSTOM:"+T; if(c.members.some(x=>x.k===k)) return;
-    c.members.push({t:T,n:rest.join(" ")||T,k});
+    if(c.members.some(x=>x.t===T)) return;
+    c.members.push({t:T,n:rest.join(" ")||T});
   });
 }
 function manageCustom(){
@@ -590,7 +599,7 @@ function manageCustom(){
    <button class="ghost full rem" id="cdel">Deze index verwijderen</button><button class="ghost full" onclick="closeSheet()">Sluiten</button>`);
   $("#cadd").onclick=async()=>{ addBulk(cur,$("#cbulk").value); await persist(); };
   $("#cr").onclick=async()=>{ const n=$("#cren").value.trim(); if(n) c.name=n; await persist(); };
-  $("#cdel").onclick=async()=>{ if(!confirm("Index verwijderen? Je markeringen blijven bewaard.")) return; delete custom[cur]; await saveAll(); closeSheet(); goHome(); };
+  $("#cdel").onclick=async()=>{ if(!confirm("Index verwijderen? De markeringen in deze index worden ook verwijderd.")) return; Object.keys(marks).filter(k=>k.startsWith(cur+"|")).forEach(k=>delete marks[k]); delete custom[cur]; await saveAll(); closeSheet(); goHome(); };
 }
 
 /* ============ WIJZIGINGEN + INSTELLINGEN ============ */
@@ -627,7 +636,7 @@ $("#importFile").onchange=async ev=>{
     if(d.app!=="hs-tracker" || typeof d.marks!=="object" || typeof d.lists!=="object") throw new Error("dit is geen back-up van HS Tracker");
     const n=Object.keys(d.marks).length, when=d.at?new Date(d.at).toLocaleDateString("nl-NL"):"onbekende datum";
     if(!confirm(`Back-up van ${when} terugzetten? Deze bevat ${n} markeringen en vervangt alles wat nu in de app staat.`)) return;
-    lists=d.lists; custom=d.custom||{}; marks=d.marks; history=d.history||[]; tags=d.tags&&d.tags.length?d.tags:[...DEFAULT_TAGS];
+    lists=d.lists; custom=d.custom||{}; marks=d.marks;  history=d.history||[]; tags=d.tags&&d.tags.length?d.tags:[...DEFAULT_TAGS]; migrate();
     loadFailed=false; if(await saveAll()){ cur=null; $("#indexView").classList.add("hidden"); $("#home").classList.remove("hidden"); renderAll(); alert("Back-up teruggezet."); }
   }catch(e){ alert("Terugzetten mislukt: "+e.message); }
 };
@@ -646,7 +655,7 @@ $("#logo").src = document.querySelector('link[rel="apple-touch-icon"]').href;
 renderSchemes(); applyPalette(); renderBackupInfo();
 $("#showScr").checked=pget("showScr",true); $("#showScr").onchange=e=>pset("showScr",e.target.checked);
 (async()=>{
-  try{ lists=await load("lists",{}); custom=await load("custom",{}); marks=await load("marks",{}); history=await load("history",[]); tags=await load("tags",[...DEFAULT_TAGS]); migrate(); }
+  try{ lists=await load("lists",{}); custom=await load("custom",{}); marks=await load("marks",{}); history=await load("history",[]); tags=await load("tags",[...DEFAULT_TAGS]); if(migrate()) await saveAll(); }
   catch(e){ loadFailed=true; $("#homeNotice").innerHTML=`<div class="card sm rem">Je gegevens konden niet geladen worden (${esc(e.message)}). Controleer je verbinding en open de app opnieuw.</div>`; $("#homeGrid").innerHTML=""; return; }
   renderAll();
 })();
